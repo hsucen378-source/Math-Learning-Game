@@ -145,7 +145,8 @@
 <script>
 /* ---------- 設定與連線 ---------- */
 const CFG = window.GAME_CONFIG || {};
-const ONLINE = !!(CFG.supabaseUrl && CFG.supabaseKey);
+const SHOWCASE = new URLSearchParams(location.search).has('demo');   // 展示版：不用登入、不連資料庫
+const ONLINE = !SHOWCASE && !!(CFG.supabaseUrl && CFG.supabaseKey);
 const $ = id => document.getElementById(id);
 const esc = v => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const store = {
@@ -154,6 +155,7 @@ const store = {
   del(k) { try { localStorage.removeItem(k); } catch (e) {} }
 };
 async function rpc(name, body) {
+  if (SHOWCASE) return Showcase.rpc(name, body);
   const headers = { 'Content-Type': 'application/json', apikey: CFG.supabaseKey };
   if (CFG.supabaseKey.startsWith('eyJ')) headers.Authorization = 'Bearer ' + CFG.supabaseKey;
   let res;
@@ -167,7 +169,7 @@ async function rpc(name, body) {
   return res.json();
 }
 const TOKEN_KEY = 'typhoon.admin.token';
-const token = () => store.get(TOKEN_KEY);
+const token = () => SHOWCASE ? 'showcase' : store.get(TOKEN_KEY);
 
 /* ---------- 題目與錯誤類型名稱 ---------- */
 const ITEM_NAMES = {
@@ -807,6 +809,143 @@ function bindView() {
   };
 }
 
+/* ---------- 展示版（demo-admin.html 會轉到 admin.html?demo） ----------
+   不用登入、完全不連資料庫：畫面上是一班虛構學生的範例資料（姓名都是編的），
+   再加上這台裝置在學生展示版玩過的紀錄（座號 31）。按鈕都能操作，但只改這個分頁裡的資料，重新整理就回到範例。 */
+const Showcase = {
+  LOCAL_SEAT: 31,
+  rand: null,
+  seed(n) { let x = n; this.rand = () => { x = (x * 1103515245 + 12345) % 2147483648; return x / 2147483648; }; },
+  pick(arr) { return arr[Math.floor(this.rand() * arr.length)]; },
+  build() {
+    this.seed(20261127);
+    const R = () => this.rand();
+    const names = ['林若晴', '陳柏宇', '黃語彤', '張承恩', '李宥蓁', '王品睿', '吳沛綺', '劉冠廷', '蔡欣妤', '楊哲維',
+                   '許芷瑄', '鄭宇翔', '謝佳穎', '郭子豪', '洪詩涵', '曾柏翰', '邱若瑜', '廖彥廷', '賴思妤', '周承翰',
+                   '葉芮安', '蘇奕辰', '莊雅筑', '呂冠宇', '江采潔', '何柏均', '羅映彤', '高子睿', '潘語萱', '簡宥翔'];
+    const nicks = ['颱風剋星', '雷達之眼', '小雨', '北極星', '阿哲', '海鷗', '數學魔人', '風箏', '小魚', '逆時針',
+                   '浪花', '極光', '布丁', '小熊', '閃電', '雲朵', '鯨魚', '向日葵', '飛魚', '珊瑚',
+                   '燈塔', '小金魚', '旋風', '星星', '貓頭鷹', '海豚', '彩虹', '地瓜', null, null];
+    const now = Date.now(), start = now - 40 * 60000;          // 假設 40 分鐘前開始上課
+    const at = (fromMin, toMin) => new Date(start + (fromMin + R() * (toMin - fromMin)) * 60000).toISOString();
+    const students = names.map((name, i) => {
+      const seat = i + 1;
+      const unlocked = seat <= 26 ? [1, 2, 3] : seat <= 28 ? [1, 2] : [1];
+      return { seat, account: 's' + String(seat).padStart(2, '0'), password: String(1000 + ((seat * 7919) % 9000)), name,
+               nickname: nicks[i], unlocked, logged_in: R() < 0.9 };
+    });
+    // 第一、二關：每題的一次答對率與常見錯誤，第 2、3 次再答對的機率
+    const L12 = {
+      1: { A: [0.85, ['clockwise', 'north_cw', 'distance']], T: [0.5, ['mirror', 'north_cw', 'angle', 'distance']],
+           S: [0.9, ['distance', 'clockwise']], H: [0.6, ['other', 'clockwise', 'distance']] },
+      2: { D: [0.8, ['swap', 'sign']], E: [0.5, ['sign', 'swap', 'other']], F: [0.55, ['sign', 'swap']],
+           G: [0.75, ['add', 'no_sqrt']], H: [0.6, ['no_sqrt', 'add', 'negative']] }
+    };
+    const answerOf = (lv, key, tag) => {
+      const tap = { A: [3, 60], S: [2, 30], H: [2, 30] }, p2r = { D: [4, 3], E: [-8, 6], F: [3, -4] }, r2p = { G: [3, 4, 5], H: [-6, 8, 10] };
+      if (lv === 1 && key === 'T') return { ok: { d: 4, a: 300 }, negative_angle: { d: 4, a: -60 }, mirror: { d: 4, a: 60 }, north_cw: { d: 4, a: 150 }, angle: { d: 4, a: 315 }, distance: { d: 3, a: 300 } }[tag];
+      if (lv === 1) {
+        const [r, th] = tap[key], m = a => ((a % 360) + 360) % 360;
+        return { ok: { r, th }, clockwise: { r, th: m(-th) }, north_cw: { r, th: m(90 - th) }, distance: { r: r + 1, th }, other: { r, th: m(th + 45) } }[tag];
+      }
+      if (p2r[key]) {
+        const [x, y] = p2r[key];
+        return { ok: { x: String(x), y: String(y) }, swap: { x: String(y), y: String(x) }, sign: { x: String(Math.abs(x)), y: String(Math.abs(y)) }, other: { x: '6', y: '8' } }[tag];
+      }
+      const [x, y, r] = r2p[key];
+      return { ok: { r: String(r) }, add: { r: String(Math.abs(x) + Math.abs(y)) }, no_sqrt: { r: String(x * x + y * y) }, negative: { r: String(-r) } }[tag];
+    };
+    const attempts = [];
+    students.forEach(s => {
+      [1, 2].filter(lv => s.unlocked.includes(lv) && !(lv === 2 && s.seat > 28)).forEach(lv => {
+        const keys = Object.keys(L12[lv]);
+        const upto = s.unlocked.length === 1 && lv === 1 ? 2 + Math.floor(R() * 2) : keys.length;   // 進度慢的學生還沒做完
+        keys.slice(0, upto).forEach((key, ki) => {
+          const [p, tags] = L12[lv][key];
+          const base = lv === 1 ? 2 + ki * 2.5 : 13 + ki * 2.2;
+          for (let k = 1; k <= 3; k++) {
+            const ok = R() < (k === 1 ? p : 0.6);
+            const tag = ok ? (lv === 1 && key === 'T' && R() < 0.25 ? 'negative_angle' : 'ok') : this.pick(tags);
+            attempts.push({ t: at(base + k * 0.5, base + k * 0.5 + 0.4), seat: s.seat, level: lv, item: key, correct: ok, tag, attempt: k, answer: answerOf(lv, key, tag) });
+            if (ok) break;
+          }
+        });
+      });
+    });
+    // 第三關：每題答對率與錯誤選項的比重（選項順序同 L3_Q：0 是正解）
+    const P3 = [[0.85, [1, 1, 3]], [0.6, [3, 1, 2]], [0.55, [3, 1, 1]], [0.5, [3, 1, 2]], [0.7, [3, 2, 1]], [0.45, [2, 3, 1]]];
+    const runs = [];
+    students.filter(s => s.unlocked.includes(3)).forEach(s => {
+      if (s.seat === 25 || s.seat === 26) return;                     // 還沒按開始
+      if (s.seat === 23 || s.seat === 24) { runs.push({ seat: s.seat, name: s.name, nickname: s.nickname, started_at: new Date(now - (30 + R() * 40) * 1000).toISOString(), submitted_at: null, score: null, used_seconds: null, auto: false, late: false, answers: null }); return; }
+      const auto = R() < 0.12;
+      const answers = P3.map(([p, w], i) => {
+        if (auto && i === 5 && R() < 0.6) return null;
+        if (R() < p) return 0;
+        const tot = w[0] + w[1] + w[2]; let x = R() * tot;
+        return x < w[0] ? 1 : x < w[0] + w[1] ? 2 : 3;
+      });
+      const used = auto ? 120 : Math.round((50 + R() * 68) * 10) / 10;
+      const startedAt = start + (26 + R() * 4) * 60000;
+      const run = { seat: s.seat, name: s.name, nickname: s.nickname, started_at: new Date(startedAt).toISOString(), submitted_at: new Date(startedAt + used * 1000).toISOString(),
+                    score: answers.filter(a => a === 0).length, used_seconds: used, auto, late: false, answers };
+      runs.push(run);
+      answers.forEach((a, i) => attempts.push({ t: run.submitted_at, seat: s.seat, level: 3, item: String(i + 1), correct: a === 0,
+        tag: a == null ? 'blank' : a === 0 ? 'ok' : L3_Q[i].opts[a][1], attempt: null, answer: a == null ? null : L3_Q[i].opts[a][0] }));
+    });
+    attempts.sort((a, b) => a.t < b.t ? -1 : 1);
+    return { students, attempts, runs,
+      levels: [{ level: 1, title: '颱風定位', code: '1111', time_limit: null }, { level: 2, title: '坐標翻譯機', code: '2222', time_limit: null }, { level: 3, title: '象限挑戰', code: '3333', time_limit: 120 }],
+      settings: { show_leaderboard: 'true', reveal_answers: 'false' } };
+  },
+  /* 這台裝置在學生展示版（index.html?demo）玩過的紀錄 */
+  local() {
+    const d = store.get('typhoon.showcase'), u = d && d.users && d.users.showcase;
+    if (!u) return null;
+    const seat = this.LOCAL_SEAT, name = '展示工程師（這台裝置）';
+    const student = { seat, account: 'showcase', password: '—', name, nickname: u.nickname || null, unlocked: u.unlocked || [], logged_in: true };
+    const attempts = (u.attempts || []).filter(a => a.t).map(a => ({ ...a, seat, level: +a.level }));
+    const l3 = u.l3, run = l3 ? { seat, name, nickname: u.nickname || null, started_at: l3.started_at, submitted_at: l3.submitted ? new Date(new Date(l3.started_at).getTime() + (l3.used_seconds || 0) * 1000).toISOString() : null,
+      score: l3.submitted ? l3.score : null, used_seconds: l3.submitted ? l3.used_seconds : null, auto: !!l3.auto, late: false, answers: l3.submitted ? l3.answers : null } : null;
+    return { d, student, attempts, run };
+  },
+  state: null,
+  async rpc(name, b) {
+    const S = this.state || (this.state = this.build());
+    const L = this.local();
+    if (name === 'admin_data') {
+      const inRange = a => (!b.p_from || a.t >= b.p_from) && (!b.p_to || a.t < b.p_to);
+      const students = S.students.concat(L ? [L.student] : []);
+      const runs = S.runs.concat(L && L.run ? [L.run] : []).sort((x, y) => (y.score ?? -1) - (x.score ?? -1) || (x.used_seconds ?? 1e9) - (y.used_seconds ?? 1e9));
+      const attempts = S.attempts.concat(L ? L.attempts : []).filter(inRange).sort((x, y) => x.t < y.t ? -1 : 1);
+      return { ok: true, server_now: new Date().toISOString(), students, runs, attempts, levels: S.levels, settings: S.settings };
+    }
+    const isLocal = b.p_seat === this.LOCAL_SEAT && L;
+    if (name === 'admin_update_level') {
+      const lv = S.levels.find(l => l.level === b.p_level);
+      lv.code = b.p_code; if (b.p_level === 3 && b.p_time_limit >= 30 && b.p_time_limit <= 1800) lv.time_limit = b.p_time_limit;
+    } else if (name === 'admin_set_setting') {
+      S.settings[b.p_key] = b.p_value;
+    } else if (name === 'admin_allow_retake') {
+      if (isLocal) { L.d.users.showcase.l3 = null; store.set('typhoon.showcase', L.d); store.del('typhoon.l3.showcase'); }
+      S.runs = S.runs.filter(r => r.seat !== b.p_seat);
+    } else if (name === 'admin_force_logout') {
+      S.students.forEach(s => { if (s.seat === b.p_seat) s.logged_in = false; });
+    } else if (name === 'admin_set_nickname') {
+      const v = String(b.p_nickname || '').trim() || null;
+      if (v && [...v].length > 10) return { ok: false, reason: 'invalid' };
+      if (v && S.students.some(s => s.seat !== b.p_seat && s.nickname && s.nickname.toLowerCase() === v.toLowerCase())) return { ok: false, reason: 'taken' };
+      if (isLocal) { L.d.users.showcase.nickname = v; store.set('typhoon.showcase', L.d); }
+      S.students.forEach(s => { if (s.seat === b.p_seat) s.nickname = v; });
+      S.runs.forEach(r => { if (r.seat === b.p_seat) r.nickname = v; });
+    } else if (name === 'admin_reset') {
+      S.attempts = []; S.runs = []; S.students.forEach(s => { s.unlocked = []; s.logged_in = false; });
+      store.del('typhoon.showcase'); store.del('typhoon.l3.showcase');
+    }
+    return { ok: true };
+  }
+};
+
 /* ---------- 開始 ---------- */
 /* 網站更新偵測：老師後台開著時網站更新了，就重新載入成新版 */
 async function pageOutdated() {
@@ -818,7 +957,7 @@ async function pageOutdated() {
     const last = +sessionStorage.getItem('typhoon.adminReloadAt') || 0;
     if (Date.now() - last < 60000) return false;
     sessionStorage.setItem('typhoon.adminReloadAt', String(Date.now()));
-    location.replace(location.pathname + '?r=' + Date.now());
+    location.replace(location.pathname + (SHOWCASE ? '?demo&r=' : '?r=') + Date.now());
     return true;
   } catch (e) { return false; }
 }
@@ -826,6 +965,18 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 
 (async () => {
   if (await pageOutdated()) return;
+  if (SHOWCASE) {
+    const lo = $('btn-logout');
+    lo.textContent = '回到範例資料';
+    lo.onclick = () => { Showcase.state = null; refresh(); };
+    const tag = document.createElement('span');
+    tag.textContent = '展示版：學生是虛構的範例資料，操作只影響這個分頁，重新整理就恢復';
+    tag.style.cssText = 'background:#f59e0b;color:#1c1917;font-size:12px;font-weight:700;padding:2px 10px;border-radius:999px';
+    $('last-update').after(tag);
+    $('f-date').value = todayStr();
+    refresh(true);
+    return;
+  }
   if (ONLINE && token()) refresh(true); else showLoginPage();
 })();
 </script>

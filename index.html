@@ -332,7 +332,9 @@ const DEFAULTS = {
 };
 const CONFIG = Object.assign({}, DEFAULTS, window.GAME_CONFIG || {});
 CONFIG.demo = Object.assign({}, DEFAULTS.demo, CONFIG.demo || {});
-const ONLINE = !!(CONFIG.supabaseUrl && CONFIG.supabaseKey);
+/* 展示版（demo.html 會轉到 index.html?demo）：不用帳密、不用授權碼，紀錄只存在這台裝置，完全不連資料庫 */
+const SHOWCASE = new URLSearchParams(location.search).has('demo');
+const ONLINE = !SHOWCASE && !!(CONFIG.supabaseUrl && CONFIG.supabaseKey);
 /* 為什麼是示範模式：顯示在登入畫面，方便排除問題 */
 function configProblem() {
   if (window.__configMissing) return '找不到 config.js。請確認它和 index.html 放在同一層，檔名全部小寫。';
@@ -483,7 +485,40 @@ const LocalAPI = {
     return { ok: true, score: u.l3.score, used_seconds: u.l3.used_seconds };
   }
 };
-const API = ONLINE ? RemoteAPI : LocalAPI;
+/* 展示版：沿用示範版的做法，但自動登入、三關都已解鎖、交卷後就能看正解，排行榜放幾位虛構的同學 */
+const SHOW_ACC = { account: 'showcase', seat: 31, name: '展示工程師' };
+const SHOW_BOARD = [['颱風剋星', 6, 58], ['雷達之眼', 6, 71], ['小雨', 5, 64], ['北極星', 5, 88], ['阿哲', 5, 97],
+                    ['海鷗', 4, 80], ['數學魔人', 4, 102], ['風箏', 3, 77], ['小魚', 3, 110], ['逆時針', 2, 120]];
+const ShowcaseAPI = Object.assign(Object.create(LocalAPI), {
+  KEY: 'typhoon.showcase',
+  data() { return store.get(this.KEY) || { session: SHOW_ACC.account, users: {} }; },
+  save(d) { store.set(this.KEY, d); },
+  acc() { return SHOW_ACC; },
+  user(d) {
+    d.session = SHOW_ACC.account;
+    d.users[d.session] = d.users[d.session] || { unlocked: [1, 2, 3], l3: null, nickname: '展示工程師' };
+    return d.users[d.session];
+  },
+  async logout() {},
+  async me() { return { ...(await LocalAPI.me.call(this)), reveal_answers: true }; },
+  async myResults() { return { ...(await LocalAPI.myResults.call(this)), reveal: true }; },
+  async log(e) {   // 多記時間與作答內容，老師展示版才能顯示這台裝置的紀錄
+    const d = this.data(), u = this.user(d);
+    u.attempts = (u.attempts || []).concat([{ t: e.ts, level: e.level, item: String(e.item), correct: !!e.correct, attempt: e.attempt || null, tag: e.tag || null, answer: e.answer == null ? null : e.answer }]).slice(-500);
+    this.save(d); return { ok: true };
+  },
+  async leaderboard() {
+    const d = this.data(), u = this.user(d);
+    const rows = SHOW_BOARD.map(([nickname, score, used_seconds]) => ({ nickname, score, used_seconds, is_me: false }));
+    if (u.l3 && u.l3.submitted) rows.push({ nickname: u.nickname, score: u.l3.score, used_seconds: u.l3.used_seconds, is_me: true });
+    rows.sort((a, b) => b.score - a.score || a.used_seconds - b.used_seconds);
+    let rank = 0, prev = null;
+    rows.forEach((r, i) => { const k = r.score + '|' + r.used_seconds; if (k !== prev) { rank = i + 1; prev = k; } r.rank = rank; });
+    return { ok: true, show: true, total: rows.length, top: rows.slice(0, 10), me: rows.find(r => r.is_me) || null };
+  },
+  reset() { store.del(this.KEY); store.del('typhoon.l3.' + SHOW_ACC.account); }
+});
+const API = SHOWCASE ? ShowcaseAPI : ONLINE ? RemoteAPI : LocalAPI;
 
 /* 作答紀錄：送到資料庫；暫時連不上時先排隊，下一次再補送 */
 const GAME_LOG = [];
@@ -811,6 +846,10 @@ $('nick-input').addEventListener('keydown', e => { if (e.key === 'Enter') saveNi
 $('nick-logout').onclick = () => { hideScreen($('nick-modal')); forceLogin(); };
 
 $('btn-logout').onclick = () => {
+  if (SHOWCASE) {
+    if (!confirm('清除這台裝置上的展示紀錄，從頭開始嗎？')) return;
+    API.reset(); location.reload(); return;
+  }
   if (L3.inProgress() && !confirm('第三關作答中，登出後計時不會停止。確定要登出嗎？')) return;
   forceLogin();
 };
@@ -833,14 +872,29 @@ const PageUpdate = {
     let last = 0; try { last = +sessionStorage.getItem('typhoon.reloadAt') || 0; } catch (e) {}
     if (Date.now() - last < 60000) return false;          // 一分鐘內最多重新載入一次，避免 CDN 還沒更新時一直重整
     try { sessionStorage.setItem('typhoon.reloadAt', String(Date.now())); } catch (e) {}
-    location.replace(location.pathname + '?r=' + Date.now());
+    location.replace(location.pathname + (SHOWCASE ? '?demo&r=' : '?r=') + Date.now());
     return true;
   }
 };
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') PageUpdate.check(); });
 
+/* 展示版標籤：作答畫面以外的畫面左上角都看得到，提醒這裡的紀錄不會上傳 */
+function showcaseBadge() {
+  $('btn-logout').textContent = '重新開始';
+  const b = document.createElement('div');
+  b.id = 'showcase-badge';
+  b.textContent = '展示版・不用登入，紀錄不會上傳';
+  b.style.cssText = 'position:fixed;z-index:9999;pointer-events:none;left:max(.5rem,env(safe-area-inset-left));top:max(.5rem,env(safe-area-inset-top));'
+    + 'background:rgba(245,158,11,.92);color:#1c1917;font-size:12px;font-weight:700;padding:3px 10px;border-radius:999px;box-shadow:0 1px 4px rgba(0,0,0,.3)';
+  document.body.appendChild(b);
+  const css = document.createElement('style');   // 作答畫面左上角有按鈕，那時先把標籤藏起來
+  css.textContent = 'body:has(#main-app:not(.hidden)) #showcase-badge{display:none}';
+  document.head.appendChild(css);
+}
+
 async function boot() {
   if (await PageUpdate.check()) return;
+  if (SHOWCASE) showcaseBadge();
   showDemoBadge();
   if (ONLINE && !/^https:\/\/[^/]+\.supabase\.co\/?$/i.test(CONFIG.supabaseUrl.trim())) {
     console.warn('supabaseUrl 看起來不像 https://xxxx.supabase.co：', CONFIG.supabaseUrl);
